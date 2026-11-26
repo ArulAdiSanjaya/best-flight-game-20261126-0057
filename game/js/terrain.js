@@ -101,29 +101,40 @@ export function projectPoint(wx, wy, wz, cam, width, height) {
 }
 
 function drawSky(ctx, width, height, cam, time) {
+  const sunset = !!cam.sunset;
   const horizonY = height * 0.44 + cam.pitchPixels;
   const sky = ctx.createLinearGradient(0, 0, 0, horizonY + 40);
-  sky.addColorStop(0, '#2f6db3');
-  sky.addColorStop(0.55, '#7fb2dd');
-  sky.addColorStop(1, '#cfe4f2');
+  if (sunset) {
+    // Golden hour: violet up top melting into amber at the horizon.
+    sky.addColorStop(0, '#3a2a5e');
+    sky.addColorStop(0.5, '#b3543f');
+    sky.addColorStop(0.8, '#e88a3c');
+    sky.addColorStop(1, '#ffc46b');
+  } else {
+    sky.addColorStop(0, '#2f6db3');
+    sky.addColorStop(0.55, '#7fb2dd');
+    sky.addColorStop(1, '#cfe4f2');
+  }
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, width, Math.max(0, horizonY + 2));
-  // Low sun, warm and fixed in the west so the light stays consistent.
+  // The sun, warm and fixed in the west so the light stays consistent;
+  // at golden hour it hangs lower and burns bigger.
   const sunX = width * 0.78;
-  const sunY = horizonY - height * 0.16;
-  const glow = ctx.createRadialGradient(sunX, sunY, 4, sunX, sunY, 130);
+  const sunY = horizonY - height * (sunset ? 0.05 : 0.16);
+  const glowR = sunset ? 210 : 130;
+  const glow = ctx.createRadialGradient(sunX, sunY, 4, sunX, sunY, glowR);
   glow.addColorStop(0, 'rgba(255, 236, 180, 0.95)');
-  glow.addColorStop(0.25, 'rgba(255, 214, 130, 0.55)');
+  glow.addColorStop(0.25, sunset ? 'rgba(255, 170, 80, 0.6)' : 'rgba(255, 214, 130, 0.55)');
   glow.addColorStop(1, 'rgba(255, 214, 130, 0)');
   ctx.fillStyle = glow;
-  ctx.fillRect(sunX - 140, sunY - 140, 280, 280);
-  ctx.fillStyle = '#fff3c4';
+  ctx.fillRect(sunX - glowR - 10, sunY - glowR - 10, (glowR + 10) * 2, (glowR + 10) * 2);
+  ctx.fillStyle = sunset ? '#ffb347' : '#fff3c4';
   ctx.beginPath();
-  ctx.arc(sunX, sunY, 26, 0, Math.PI * 2);
+  ctx.arc(sunX, sunY, sunset ? 34 : 26, 0, Math.PI * 2);
   ctx.fill();
   // Distant ridges, two parallax layers that slide with heading.
-  drawRidge(ctx, width, horizonY, cam.heading, 0.12, height * 0.10, '#7d94ad');
-  drawRidge(ctx, width, horizonY, cam.heading, 0.3, height * 0.055, '#5f7d9c');
+  drawRidge(ctx, width, horizonY, cam.heading, 0.12, height * 0.10, sunset ? '#5e4460' : '#7d94ad');
+  drawRidge(ctx, width, horizonY, cam.heading, 0.3, height * 0.055, sunset ? '#46304e' : '#5f7d9c');
   // Drifting clouds, seeded and slow so screenshots stay recognisable.
   drawClouds(ctx, width, height, cam, time, horizonY);
 }
@@ -164,7 +175,7 @@ function drawClouds(ctx, width, height, cam, time, horizonY) {
     if (!p || p.dist > 4200 || p.dist < 350) continue;
     const s = (c.s / p.dist) * height * 0.6;
     if (s < 4) continue;
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.fillStyle = cam.sunset ? 'rgba(255, 186, 150, 0.85)' : 'rgba(255, 255, 255, 0.8)';
     ctx.beginPath();
     ctx.ellipse(p.x, p.y, s, s * 0.36, 0, 0, Math.PI * 2);
     ctx.ellipse(p.x - s * 0.55, p.y + s * 0.08, s * 0.6, s * 0.26, 0, 0, Math.PI * 2);
@@ -237,8 +248,138 @@ function groundPoint(cam, fwd, right, sinH, cosH) {
   return { x: wx, y: terrainHeight(wx, wz), z: wz };
 }
 
-// Draw the whole world behind the aircraft: sky, then ground.
+// Scattered world detail: trees and farmhouses placed once from a seeded
+// scatter, so the valley reads as lived-in from the air. Nothing here is
+// random per frame — the same objects stand in the same places forever.
+const DETAILS = [];
+{
+  const r = mulberry32(WORLD.seed + 31);
+  for (let i = 0; i < 360; i++) {
+    const x = (r() - 0.5) * 3400;
+    const z = -1900 + r() * 4200;
+    if (Math.abs(x) < 48 && z > WORLD.runwayStartZ - 60 && z < WORLD.runwayEndZ + 60) continue;
+    if (isRiver(x, z) || isRoad(x, z)) continue;
+    const kind = isTown(x, z) ? 'house' : (r() < 0.7 ? 'tree' : 'house');
+    DETAILS.push({ x, z, kind, s: 0.8 + r() * 0.7, tone: r() });
+  }
+}
+
+const TREE_GREENS = ['#3d6030', '#466b35', '#527a3c', '#3a5c2e'];
+
+function drawDetails(ctx, width, height, cam, time) {
+  const focal = height * 0.92;
+  for (const d of DETAILS) {
+    const gy = terrainHeight(d.x, d.z);
+    const p = projectPoint(d.x, gy, d.z, cam, width, height);
+    if (!p || p.dist > 1500 || p.dist < 22) continue;
+    const unit = focal / p.dist; // screen px per world metre at this depth
+    if (d.kind === 'tree') {
+      const h = 13 * d.s * unit;
+      if (h < 2.5) continue;
+      ctx.strokeStyle = '#5a4630';
+      ctx.lineWidth = Math.max(1, h * 0.09);
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x, p.y - h * 0.4);
+      ctx.stroke();
+      ctx.fillStyle = TREE_GREENS[Math.floor(d.tone * TREE_GREENS.length)];
+      ctx.beginPath();
+      ctx.arc(p.x, p.y - h * 0.62, h * 0.34, 0, Math.PI * 2);
+      ctx.arc(p.x - h * 0.24, p.y - h * 0.44, h * 0.24, 0, Math.PI * 2);
+      ctx.arc(p.x + h * 0.24, p.y - h * 0.44, h * 0.24, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const w = 13 * d.s * unit;
+      const h = 7 * d.s * unit;
+      if (w < 3) continue;
+      ctx.fillStyle = d.tone < 0.5 ? '#cfc4ae' : '#b8ab90';
+      ctx.fillRect(p.x - w / 2, p.y - h, w, h);
+      ctx.fillStyle = '#8a4436';
+      ctx.beginPath();
+      ctx.moveTo(p.x - w * 0.62, p.y - h);
+      ctx.lineTo(p.x, p.y - h * 1.55);
+      ctx.lineTo(p.x + w * 0.62, p.y - h);
+      ctx.closePath();
+      ctx.fill();
+      // One lit window, warm in any light.
+      ctx.fillStyle = '#ffd98a';
+      ctx.fillRect(p.x - w * 0.12, p.y - h * 0.62, w * 0.24, h * 0.3);
+    }
+  }
+  drawWindmill(ctx, width, height, cam, time, focal);
+}
+
+// A lone windmill west of the strip, blades turning slowly in the breeze.
+function drawWindmill(ctx, width, height, cam, time, focal) {
+  const wx = -190;
+  const wz = 330;
+  const gy = terrainHeight(wx, wz);
+  const top = projectPoint(wx, gy + 23, wz, cam, width, height);
+  const base = projectPoint(wx, gy, wz, cam, width, height);
+  if (!top || !base || top.dist > 1600) return;
+  const unit = focal / top.dist;
+  ctx.strokeStyle = '#d8d2c4';
+  ctx.lineWidth = Math.max(1.2, unit * 0.7);
+  ctx.beginPath();
+  ctx.moveTo(base.x - unit * 3, base.y);
+  ctx.lineTo(top.x, top.y);
+  ctx.lineTo(base.x + unit * 3, base.y);
+  ctx.stroke();
+  const blade = unit * 9.5;
+  if (blade < 3) return;
+  ctx.strokeStyle = '#f0ead8';
+  ctx.lineWidth = Math.max(1, unit * 0.55);
+  for (let k = 0; k < 4; k++) {
+    const a = time * 0.8 + (k * Math.PI) / 2;
+    ctx.beginPath();
+    ctx.moveTo(top.x, top.y);
+    ctx.lineTo(top.x + Math.cos(a) * blade, top.y + Math.sin(a) * blade);
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#c8442e';
+  ctx.beginPath();
+  ctx.arc(top.x, top.y, Math.max(1.5, unit * 0.8), 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Two flocks of birds working the valley thermals: slow circles, quick wings.
+function drawBirds(ctx, width, height, cam, time) {
+  ctx.strokeStyle = 'rgba(28, 32, 40, 0.85)';
+  ctx.lineWidth = 1.6;
+  for (let f = 0; f < 2; f++) {
+    const cx = (f ? 500 : -420) + Math.sin(time * 0.021 + f * 2.4) * 850;
+    const cz = 350 + Math.cos(time * 0.017 + f * 1.7) * 750;
+    const cy = 185 + f * 55 + Math.sin(time * 0.3 + f) * 6;
+    for (let i = 0; i < 7; i++) {
+      const bx = cx + (i % 4) * 24 - 36 + Math.floor(i / 4) * 12;
+      const bz = cz + Math.floor(i / 4) * 22 - (i % 4) * 9;
+      const by = cy + Math.sin(time * 0.4 + i) * 3;
+      const p = projectPoint(bx, by, bz, cam, width, height);
+      if (!p || p.dist > 2600 || p.dist < 60) continue;
+      const s = clamp((13 / p.dist) * height * 0.92, 1.4, 9);
+      const flap = Math.sin(time * 9 + i * 1.3) * s * 0.55;
+      ctx.beginPath();
+      ctx.moveTo(p.x - s, p.y - flap);
+      ctx.quadraticCurveTo(p.x - s * 0.3, p.y + s * 0.3, p.x, p.y);
+      ctx.quadraticCurveTo(p.x + s * 0.3, p.y + s * 0.3, p.x + s, p.y - flap);
+      ctx.stroke();
+    }
+  }
+}
+
+// Draw the whole world behind the aircraft: sky, then ground, then the
+// detail that makes the valley feel inhabited.
 export function drawWorld(ctx, width, height, cam, time) {
   drawSky(ctx, width, height, cam, time);
   drawGround(ctx, width, height, cam);
+  if (cam.sunset) {
+    // A warm wash over the land: long light, long shadows.
+    const wash = ctx.createLinearGradient(0, height * 0.4, 0, height);
+    wash.addColorStop(0, 'rgba(255, 130, 50, 0.10)');
+    wash.addColorStop(1, 'rgba(70, 25, 80, 0.14)');
+    ctx.fillStyle = wash;
+    ctx.fillRect(0, height * 0.4, width, height * 0.6);
+  }
+  drawDetails(ctx, width, height, cam, time);
+  drawBirds(ctx, width, height, cam, time);
 }

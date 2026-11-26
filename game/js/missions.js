@@ -1,4 +1,4 @@
-// Skyline Run — the three sorties. Each mission is a route of glowing rings
+// Skyline Run — the four sorties. Each mission is a route of glowing rings
 // over the same valley, with its own goal, scoring and briefing text.
 
 import { mulberry32 } from './util.js';
@@ -15,6 +15,9 @@ export const MISSIONS = [
     short: 'Fly all 8 rings over the valley',
     tip: 'Tip: trim the throttle to cruise and bank gently — the rings reward smooth lines.',
     timeLimit: 0,
+    wind: 0,
+    sunset: false,
+    par: { S: 1650, A: 1350, B: 1050 },
     briefing: 'Eight rings hang over the valley. Thread them all, in order,',
     briefing2: 'and mind your fuel — a dead stick landing still counts.',
     start: { x: 0, z: -610, alt: 0, heading: 0, speed: 0, throttle: 0 },
@@ -42,6 +45,9 @@ export const MISSIONS = [
     short: '10 rings against a 2:30 clock',
     tip: 'Tip: full throttle on the straights, and cut the corners — the clock pays 5 points a second.',
     timeLimit: 150,
+    wind: 0.35,
+    sunset: false,
+    par: { S: 2300, A: 1900, B: 1450 },
     briefing: 'Ten rings, two and a half minutes. Full throttle, clean lines,',
     briefing2: 'and every second left on the clock is worth 5 points.',
     start: { x: 0, z: -610, alt: 0, heading: 0, speed: 0, throttle: 0 },
@@ -69,6 +75,9 @@ export const MISSIONS = [
     short: 'Take off, thread 3 rings, land back on the strip',
     tip: 'Tip: land slow and on the centreline — a gentle runway touchdown is worth 250 plus your fuel.',
     timeLimit: 0,
+    wind: 0,
+    sunset: false,
+    par: { S: 800, A: 680, B: 540 },
     briefing: 'Take off from Runway 36, thread the three guide rings, then',
     briefing2: 'bring her home: gentle, slow, on the centreline. Gear down!',
     start: { x: 0, z: -610, alt: 0, heading: 0, speed: 0, throttle: 0 },
@@ -80,6 +89,36 @@ export const MISSIONS = [
       ];
     },
     needsLanding: true,
+  },
+  {
+    id: 'storm-ridge',
+    name: 'Storm Ridge',
+    short: '7 tight rings in gusting wind, 2:00 clock',
+    tip: 'Tip: the gusts shove you sideways — crab into them, aim upwind of each ring, and keep the combo alive.',
+    timeLimit: 120,
+    wind: 1,
+    sunset: true,
+    par: { S: 1700, A: 1400, B: 1050 },
+    briefing: 'A storm front is rolling over the ridge at golden hour. Seven',
+    briefing2: 'tight rings, a short clock, and a crosswind with teeth. Good luck.',
+    start: { x: 0, z: -610, alt: 0, heading: 0, speed: 0, throttle: 0 },
+    buildRings() {
+      const rand = mulberry32(777);
+      const rings = [];
+      let x = 0;
+      let z = -200;
+      let heading = 0.3;
+      for (let i = 0; i < 7; i++) {
+        heading += (rand() - 0.5) * 1.3;
+        const dist = 300 + rand() * 120;
+        x += Math.sin(heading) * dist;
+        z += Math.cos(heading) * dist;
+        x = Math.max(-1000, Math.min(1000, x));
+        z = Math.max(-1200, Math.min(1700, z));
+        rings.push(makeRing(x, 120 + rand() * 160, z, 14));
+      }
+      return rings;
+    },
   },
 ];
 
@@ -96,4 +135,32 @@ export function ringPoints(plane) {
 export function landingPoints(plane, onRunway) {
   const base = onRunway ? 250 : 60;
   return base + Math.round(plane.fuel);
+}
+
+// Combo scoring: consecutive clean rings build a multiplier. The first
+// ring of a streak pays ×1, each next one adds ×0.25, capped at ×3.
+// A crash breaks the streak back to zero.
+export function comboMultiplier(combo) {
+  if (combo <= 1) return 1;
+  return Math.min(3, 1 + 0.25 * (combo - 1));
+}
+
+// Score one ring pass. `dist` is the 3D distance from the ring centre at
+// the moment of the pass: threading the very edge (a near miss) pays a
+// flat bonus on top of the multiplied base points.
+export function scoreRing(plane, ring, dist, combo) {
+  const multiplier = comboMultiplier(combo);
+  const nearMiss = dist >= ring.radius * 0.72;
+  const points = Math.round(ringPoints(plane) * multiplier) + (nearMiss ? 25 : 0);
+  return { points, multiplier, nearMiss };
+}
+
+// End-of-mission grade against the mission's par scores, with the medal
+// line the debrief screen shows. Only a completed sortie is graded.
+export function gradeFor(mission, score) {
+  const par = mission.par || { S: Infinity, A: Infinity, B: Infinity };
+  if (score >= par.S) return { grade: 'S', medal: 'GOLD MEDAL' };
+  if (score >= par.A) return { grade: 'A', medal: 'SILVER MEDAL' };
+  if (score >= par.B) return { grade: 'B', medal: 'BRONZE MEDAL' };
+  return { grade: 'C', medal: 'FINISHER' };
 }

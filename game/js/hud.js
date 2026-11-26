@@ -2,6 +2,8 @@
 // the compass, the warnings and the title / pause / end screens.
 
 import { clamp, formatClock, formatFeet, formatKnots, radToDeg } from './util.js';
+import { comboMultiplier } from './missions.js';
+import { WORLD } from './terrain.js';
 
 function compassLabel(headingDeg) {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -262,26 +264,37 @@ export function drawHUD(ctx, width, height, game) {
   ctx.fillText(formatKnots(plane.speed) + ' KT', 212, 134);
   ctx.fillText(Math.round(((radToDeg(plane.heading) % 360) + 360) % 360) + '°', 212, 168);
 
-  // Right: mission, rings, timer, score.
+  // Right: mission, rings, timer, score, combo, wind.
   const m = game.mission;
-  panel(width - 224, 76, 208, 108);
+  panel(width - 224, 76, 208, 158);
   ctx.textAlign = 'left';
   ctx.fillStyle = '#9fc4e8';
   ctx.font = 'bold 11px system-ui, sans-serif';
-  ctx.fillText(m.name.toUpperCase(), width - 212, 98);
+  ctx.fillText(m.name.toUpperCase(), width - 212, 100);
   ctx.fillStyle = '#ffffff';
   ctx.font = 'bold 20px system-ui, sans-serif';
   ctx.fillText('RINGS ' + game.ringsPassed + ' / ' + game.rings.length, width - 212, 126);
   if (m.timeLimit) {
     ctx.fillStyle = game.timeLeft < 30 ? '#ff5a4e' : '#ffffff';
-    ctx.fillText('TIME ' + formatClock(game.timeLeft), width - 212, 152);
+    ctx.fillText('TIME ' + formatClock(game.timeLeft), width - 212, 150);
   } else {
     ctx.fillStyle = '#ffffff';
-    ctx.fillText('FUEL ' + Math.round(plane.fuel) + '%', width - 212, 152);
+    ctx.fillText('FUEL ' + Math.round(plane.fuel) + '%', width - 212, 150);
   }
   ctx.fillStyle = '#ffb62e';
   ctx.font = 'bold 15px system-ui, sans-serif';
-  ctx.fillText('SCORE ' + game.score, width - 212, 176);
+  ctx.fillText('SCORE ' + game.score, width - 212, 174);
+  const mult = comboMultiplier(game.combo || 0);
+  ctx.font = 'bold 13px system-ui, sans-serif';
+  if ((game.combo || 0) >= 2) {
+    ctx.fillStyle = '#ffb62e';
+    ctx.fillText('COMBO ×' + mult.toFixed(2) + '  (' + game.combo + ' RINGS)', width - 212, 196);
+  }
+  if (m.wind) {
+    const windKt = Math.round(Math.hypot(plane.windX || 0, plane.windZ || 0) * 1.94384);
+    ctx.fillStyle = plane.gust > 0.55 ? '#ff9a5c' : '#9fc4e8';
+    ctx.fillText((plane.gust > 0.55 ? 'GUSTING ' : 'WIND ') + windKt + ' KT', width - 212, 218);
+  }
 
   // Bottom left: throttle + fuel bars. Kept clear of the canvas edge.
   const barY = height - (cockpit ? 214 : 66);
@@ -331,6 +344,124 @@ export function drawHUD(ctx, width, height, game) {
     ctx.textAlign = 'center';
     ctx.fillText(game.message, cx, height - (cockpit ? 230 : 90));
   }
+  drawMinimap(ctx, width, height, game);
+}
+
+// The radar: a north-up circle in the bottom-right corner. The plane sits
+// at the centre as a triangle pointing along its heading; the rings still
+// to fly are amber (the next one ringed), the ones behind you fade green,
+// and the home strip is the pale line you are looking for on the way back.
+export function drawMinimap(ctx, width, height, game) {
+  const plane = game.plane;
+  const size = 148;
+  const R = size / 2;
+  const cx = width - R - 16;
+  const cy = height - R - 16 - (game.camera === 'cockpit' ? 198 : 0);
+  const range = 1500; // metres from centre to rim
+  const toMap = (wx, wz) => ({
+    x: cx + ((wx - plane.x) / range) * R,
+    y: cy - ((wz - plane.z) / range) * R,
+  });
+  ctx.save();
+  ctx.fillStyle = 'rgba(8, 16, 28, 0.78)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, cy, R - 2, 0, Math.PI * 2);
+  ctx.clip();
+  // Range ring + north tick.
+  ctx.strokeStyle = 'rgba(159, 196, 232, 0.25)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * 0.55, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = '#9fc4e8';
+  ctx.font = 'bold 11px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('N', cx, cy - R + 14);
+  // The runway.
+  const rA = toMap(0, WORLD.runwayStartZ);
+  const rB = toMap(0, WORLD.runwayEndZ);
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(rA.x, rA.y);
+  ctx.lineTo(rB.x, rB.y);
+  ctx.stroke();
+  // Rings.
+  game.rings.forEach((ring, i) => {
+    const p = toMap(ring.x, ring.z);
+    if (Math.hypot(p.x - cx, p.y - cy) > R - 4) return;
+    if (ring.passed) {
+      ctx.fillStyle = 'rgba(126, 226, 168, 0.4)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = i === game.ringsPassed ? '#ffb62e' : 'rgba(255, 214, 130, 0.85)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, i === game.ringsPassed ? 4.5 : 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      if (i === game.ringsPassed) {
+        ctx.strokeStyle = 'rgba(255, 182, 46, 0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  });
+  // Wind arrow: which way the air is pushing, along the rim.
+  if (game.mission.wind && (plane.windX || plane.windZ)) {
+    const wx = plane.windX;
+    const wz = plane.windZ;
+    const mag = Math.hypot(wx, wz);
+    if (mag > 0.5) {
+      const ux = wx / mag;
+      const uz = wz / mag;
+      const dx = ux;   // screen-space wind direction (north is up)
+      const dy = -uz;
+      const ax = cx + dx * (R - 16);
+      const ay = cy + dy * (R - 16);
+      const bx = ax - dx * 13;
+      const by = ay - dy * 13;
+      ctx.strokeStyle = '#ff9a5c';
+      ctx.fillStyle = '#ff9a5c';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(ax, ay);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx + -dy * 4.5 + dx * 3, by + dx * 4.5 + dy * 3);
+      ctx.lineTo(bx - -dy * 4.5 + dx * 3, by - dx * 4.5 + dy * 3);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+  // The plane, drawn last and unclipped, pointing along its heading.
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(plane.heading);
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(0, -8);
+  ctx.lineTo(5.5, 6);
+  ctx.lineTo(0, 3);
+  ctx.lineTo(-5.5, 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#9fc4e8';
+  ctx.font = 'bold 10px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('RADAR', cx, cy + R + 13);
 }
 
 // A centred text screen over a dimmed world: title, pause, landing, crash.

@@ -2,7 +2,7 @@
 // to reward good flying. Throttle sets thrust, pitch trades speed for height,
 // roll turns the nose, and slow flight near the ground ends badly.
 
-import { clamp, lerp, wrapAngle } from './util.js';
+import { clamp, lerp, makeNoise2D, wrapAngle } from './util.js';
 import { terrainHeight, WORLD } from './terrain.js';
 
 export const PLANE = {
@@ -35,7 +35,47 @@ export function createPlane() {
     onGround: true,
     airborne: false,
     engineOut: false,
+    // Wind: strength is set by the mission (0 calm .. 1 storm). The live
+    // vector and gust level are recomputed every step for the HUD.
+    windStrength: 0,
+    windX: 0,
+    windZ: 0,
+    gust: 0,
+    flightTime: 0,
   };
+}
+
+// The wind field: a mostly-westerly flow whose strength swells and chops
+// with seeded noise, so a given mission always blows the same way. The
+// vector is hard-capped at MAX_WIND * strength metres per second.
+export const MAX_WIND = 13;
+const gustSwell = makeNoise2D(90210);
+const gustChop = makeNoise2D(5150);
+
+export function updateWind(plane) {
+  const s = plane.windStrength || 0;
+  if (s <= 0) {
+    plane.windX = 0;
+    plane.windZ = 0;
+    plane.gust = 0;
+    return;
+  }
+  const t = plane.flightTime;
+  const swell = gustSwell(t * 0.11, 3.7);
+  const chop = gustChop(t * 0.45, 9.1);
+  const gustAmt = clamp(0.55 + swell * 0.45 + chop * 0.25, 0, 1.25);
+  const dir = 0.9 + gustSwell(7.3, t * 0.03) * 0.7;
+  let wx = -Math.cos(dir) * 11 * gustAmt * s;
+  let wz = Math.sin(dir) * 6.6 * gustAmt * s;
+  const mag = Math.hypot(wx, wz);
+  const cap = MAX_WIND * s;
+  if (mag > cap) {
+    wx = (wx / mag) * cap;
+    wz = (wz / mag) * cap;
+  }
+  plane.windX = wx;
+  plane.windZ = wz;
+  plane.gust = clamp(gustAmt - 0.35, 0, 1);
 }
 
 // One physics step. `input` carries the pilot's demands for this frame:
@@ -44,6 +84,8 @@ export function stepPlane(plane, input, dt) {
   const ground = terrainHeight(plane.x, plane.z);
   plane.onGround = plane.alt <= ground + 0.05;
   const wasOnGround = plane.onGround;
+  plane.flightTime += dt;
+  updateWind(plane);
 
   // Throttle follows the lever, unless the tanks are dry.
   plane.targetThrottle = clamp(plane.targetThrottle + input.throttleDelta * dt, 0, 1);
@@ -90,14 +132,20 @@ export function stepPlane(plane, input, dt) {
     vs = Math.sin(plane.pitch) * plane.speed * 0.92;
   }
   if (input.brake && plane.onGround) vs = 0;
+  // Gust turbulence: a bounded vertical bump while airborne in rough air.
+  if (!plane.onGround && plane.gust > 0) {
+    vs += Math.sin(plane.flightTime * 7.3) * plane.gust * 1.8;
+  }
   plane.verticalSpeed = vs;
   plane.alt += vs * dt;
 
-  // Move across the valley.
+  // Move across the valley. The wind only pushes a plane that is actually
+  // in the air — a parked plane sits still, a flying one drifts.
   const dx = Math.sin(plane.heading) * plane.speed * dt;
   const dz = Math.cos(plane.heading) * plane.speed * dt;
-  plane.x += dx;
-  plane.z += dz;
+  const drift = plane.onGround ? 0 : 1;
+  plane.x += dx + plane.windX * drift * dt;
+  plane.z += dz + plane.windZ * drift * dt;
   plane.airborne = !plane.onGround && plane.alt > ground + 2;
 
   // The ground is hard — but only a real arrival counts as a touchdown.
