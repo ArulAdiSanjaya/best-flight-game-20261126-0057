@@ -1,0 +1,30 @@
+/* Skyline Run — page chrome. The canvas is the whole game; this only centres it. */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #0b1526;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#stage {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#game {
+  width: min(100vw, 160vh);
+  height: min(100vh, 62.5vw);
+  display: block;
+  background: #0b1526;
+  cursor: crosshair;
+}
+#overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
